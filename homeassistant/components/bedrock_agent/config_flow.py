@@ -33,7 +33,7 @@ from homeassistant.helpers.selector import (
 )
 from homeassistant.helpers.typing import VolDictType
 
-from . import create_client, is_auth_error
+from .client import async_get_session, create_client, is_auth_error
 from .const import (
     CONF_ACCESS_KEY_ID,
     CONF_AGENT_ALIAS_ID,
@@ -86,13 +86,14 @@ RECOMMENDED_OPTIONS = {
 }
 
 
-def validate_input(data: dict[str, Any]) -> None:
+async def validate_input(hass: HomeAssistant, data: Mapping[str, Any]) -> None:
     """Validate the user input allows us to connect.
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
-    This does blocking I/O and must be run in the executor.
     """
-    create_client(data, "bedrock").list_foundation_models(byOutputModality="TEXT")
+    session = await async_get_session(hass)
+    async with create_client(session, data, "bedrock") as bedrock:
+        await bedrock.list_foundation_models(byOutputModality="TEXT")
 
 
 class BedrockConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -103,7 +104,7 @@ class BedrockConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_validate(self, data: dict[str, Any]) -> dict[str, str]:
         """Validate the credentials and return any errors."""
         try:
-            await self.hass.async_add_executor_job(validate_input, data)
+            await validate_input(self.hass, data)
         except ClientError as err:
             if is_auth_error(err):
                 return {"base": "invalid_auth"}
@@ -218,8 +219,8 @@ class BedrockOptionsFlow(OptionsFlow):
             }
 
         if not options.get(CONF_RECOMMENDED) and self.models is None:
-            self.models, self.agents = await self.hass.async_add_executor_job(
-                _fetch_models_and_agents, dict(self.config_entry.data)
+            self.models, self.agents = await _async_fetch_models_and_agents(
+                self.hass, self.config_entry.data
             )
 
         schema = bedrock_config_option_schema(
@@ -231,50 +232,50 @@ class BedrockOptionsFlow(OptionsFlow):
         )
 
 
-def _fetch_models_and_agents(
-    data: dict[str, Any],
+async def _async_fetch_models_and_agents(
+    hass: HomeAssistant, data: Mapping[str, Any]
 ) -> tuple[list[SelectOptionDict], list[SelectOptionDict]]:
     """Fetch the available models and agents.
 
     Failures are not fatal, the user can still enter a model ID by hand.
-    This does blocking I/O and must be run in the executor.
     """
+    session = await async_get_session(hass)
     models: list[SelectOptionDict] = []
     agents: list[SelectOptionDict] = []
 
     try:
-        bedrock = create_client(data, "bedrock")
-        response = bedrock.list_foundation_models(
-            byOutputModality="TEXT", byInferenceType="ON_DEMAND"
-        )
-        models.extend(
-            SelectOptionDict(
-                value=model["modelId"],
-                label=f"{model['providerName']} {model['modelName']}",
+        async with create_client(session, data, "bedrock") as bedrock:
+            response = await bedrock.list_foundation_models(
+                byOutputModality="TEXT", byInferenceType="ON_DEMAND"
             )
-            for model in response["modelSummaries"]
-            if model.get("modelLifecycle", {}).get("status") != "LEGACY"
-        )
-        # Newer models are only available through cross-region inference profiles
-        if hasattr(bedrock, "list_inference_profiles"):
-            response = bedrock.list_inference_profiles()
             models.extend(
                 SelectOptionDict(
-                    value=profile["inferenceProfileId"],
-                    label=profile["inferenceProfileName"],
+                    value=model["modelId"],
+                    label=f"{model['providerName']} {model['modelName']}",
                 )
-                for profile in response["inferenceProfileSummaries"]
+                for model in response["modelSummaries"]
+                if model.get("modelLifecycle", {}).get("status") != "LEGACY"
             )
+            # Newer models are only available through cross-region inference profiles
+            if hasattr(bedrock, "list_inference_profiles"):
+                response = await bedrock.list_inference_profiles()
+                models.extend(
+                    SelectOptionDict(
+                        value=profile["inferenceProfileId"],
+                        label=profile["inferenceProfileName"],
+                    )
+                    for profile in response["inferenceProfileSummaries"]
+                )
     except (ClientError, BotoCoreError) as err:
         _LOGGER.warning("Unable to list Amazon Bedrock models: %s", err)
 
     try:
-        bedrock_agent = create_client(data, "bedrock-agent")
-        response = bedrock_agent.list_agents()
-        agents.extend(
-            SelectOptionDict(value=agent["agentId"], label=agent["agentName"])
-            for agent in response["agentSummaries"]
-        )
+        async with create_client(session, data, "bedrock-agent") as bedrock_agent:
+            response = await bedrock_agent.list_agents()
+            agents.extend(
+                SelectOptionDict(value=agent["agentId"], label=agent["agentName"])
+                for agent in response["agentSummaries"]
+            )
     except (ClientError, BotoCoreError) as err:
         _LOGGER.debug("Unable to list Amazon Bedrock agents: %s", err)
 

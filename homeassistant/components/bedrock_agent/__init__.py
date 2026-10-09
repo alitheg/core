@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 import mimetypes
 from pathlib import Path
 from typing import Any
 
-import boto3
-from botocore.client import BaseClient
+from aiobotocore.client import AioBaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 import voluptuous as vol
 
@@ -29,15 +29,14 @@ from homeassistant.exceptions import (
 from homeassistant.helpers import config_validation as cv, selector
 from homeassistant.helpers.typing import ConfigType
 
-from .const import (
-    CONF_ACCESS_KEY_ID,
-    CONF_CHAT_MODEL,
-    CONF_PROMPT,
-    CONF_SECRET_ACCESS_KEY,
-    DOMAIN,
-    LOGGER,
-    RECOMMENDED_CHAT_MODEL,
+from .client import (
+    async_get_session,
+    create_client,
+    error_message,
+    is_auth_error,
+    is_invalid_credentials,
 )
+from .const import CONF_CHAT_MODEL, CONF_PROMPT, DOMAIN, LOGGER, RECOMMENDED_CHAT_MODEL
 
 SERVICE_GENERATE_CONTENT = "generate_content"
 CONF_CONFIG_ENTRY = "config_entry"
@@ -55,64 +54,16 @@ IMAGE_FORMATS = {
     "image/webp": "webp",
 }
 
-# The access key or secret is wrong, expired or has been revoked
-INVALID_CREDENTIALS_CODES = {
-    "InvalidSignatureException",
-    "UnrecognizedClientException",
-    "ExpiredTokenException",
-}
-
 
 @dataclass
 class BedrockData:
     """Clients for talking to Amazon Bedrock."""
 
-    runtime: BaseClient
-    agent_runtime: BaseClient
+    runtime: AioBaseClient
+    agent_runtime: AioBaseClient
 
 
 type BedrockConfigEntry = ConfigEntry[BedrockData]
-
-
-def create_client(data: dict[str, Any] | Any, service_name: str) -> BaseClient:
-    """Create a boto3 client for a Bedrock service.
-
-    This does blocking I/O and must be run in the executor.
-    """
-    session = boto3.Session(
-        aws_access_key_id=data[CONF_ACCESS_KEY_ID],
-        aws_secret_access_key=data[CONF_SECRET_ACCESS_KEY],
-        region_name=data[CONF_REGION],
-    )
-    return session.client(service_name)
-
-
-def is_invalid_credentials(err: ClientError | BotoCoreError) -> bool:
-    """Return if an error is caused by invalid credentials."""
-    return (
-        isinstance(err, ClientError)
-        and err.response.get("Error", {}).get("Code") in INVALID_CREDENTIALS_CODES
-    )
-
-
-def is_auth_error(err: ClientError) -> bool:
-    """Return if a client error is caused by invalid credentials or permissions.
-
-    At runtime an access denied error usually means access to the model has
-    not been enabled, so it should only be treated as an authentication error
-    when validating credentials.
-    """
-    return (
-        is_invalid_credentials(err)
-        or err.response.get("Error", {}).get("Code") == "AccessDeniedException"
-    )
-
-
-def error_message(err: ClientError | BotoCoreError) -> str:
-    """Return a human readable message for a boto error."""
-    if isinstance(err, ClientError):
-        return err.response.get("Error", {}).get("Message") or str(err)
-    return str(err)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -167,11 +118,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         )
 
         try:
-            response = await hass.async_add_executor_job(
-                lambda: entry.runtime_data.runtime.converse(
-                    modelId=model,
-                    messages=[{"role": "user", "content": content}],
-                )
+            response = await entry.runtime_data.runtime.converse(
+                modelId=model,
+                messages=[{"role": "user", "content": content}],
             )
         except (ClientError, BotoCoreError) as err:
             if is_invalid_credentials(err):
@@ -213,26 +162,34 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: BedrockConfigEntry) -> bool:
     """Set up Amazon Bedrock from a config entry."""
-
-    def create_clients() -> BedrockData:
-        bedrock = create_client(entry.data, "bedrock")
-        # Verify the credentials work before setting up the entities
-        bedrock.list_foundation_models(byOutputModality="TEXT")
-        return BedrockData(
-            runtime=create_client(entry.data, "bedrock-runtime"),
-            agent_runtime=create_client(entry.data, "bedrock-agent-runtime"),
-        )
+    session = await async_get_session(hass)
+    stack = AsyncExitStack()
 
     try:
-        entry.runtime_data = await hass.async_add_executor_job(create_clients)
+        # Verify the credentials work before setting up the entities
+        async with create_client(session, entry.data, "bedrock") as bedrock:
+            await bedrock.list_foundation_models(byOutputModality="TEXT")
+
+        entry.runtime_data = BedrockData(
+            runtime=await stack.enter_async_context(
+                create_client(session, entry.data, "bedrock-runtime")
+            ),
+            agent_runtime=await stack.enter_async_context(
+                create_client(session, entry.data, "bedrock-agent-runtime")
+            ),
+        )
     except ClientError as err:
+        await stack.aclose()
         if is_auth_error(err):
             raise ConfigEntryAuthFailed(
                 f"Invalid AWS credentials: {error_message(err)}"
             ) from err
         raise ConfigEntryNotReady(error_message(err)) from err
     except BotoCoreError as err:
+        await stack.aclose()
         raise ConfigEntryNotReady(error_message(err)) from err
+
+    entry.async_on_unload(stack.aclose)
 
     LOGGER.debug("Connected to Amazon Bedrock in %s", entry.data[CONF_REGION])
 

@@ -118,12 +118,9 @@ rules:
       Cloud service, one device per config entry.
 
   # Platinum
-  async-dependency:
-    status: todo
-    comment: |
-      boto3 is synchronous, calls are run in the executor.
+  async-dependency: done
   inject-websession:
     status: exempt
     comment: |
-      boto3 does not support injecting a websession.
+      aiobotocore manages its own aiohttp session.
   strict-typing: todo

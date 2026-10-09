@@ -1,7 +1,7 @@
 """Tests helpers."""
 
 from collections.abc import Generator
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -46,15 +46,19 @@ def mock_config_entry_with_assist(
 
 
 @pytest.fixture
-def mock_clients() -> Generator[dict[str, MagicMock]]:
-    """Mock the boto3 clients, keyed by service name."""
-    clients: dict[str, MagicMock] = {}
+def mock_clients() -> Generator[dict[str, AsyncMock]]:
+    """Mock the aiobotocore clients, keyed by service name."""
+    clients: dict[str, AsyncMock] = {}
 
-    def client(service_name: str) -> MagicMock:
-        return clients.setdefault(service_name, MagicMock())
+    def create_client(service_name: str, **kwargs: str) -> MagicMock:
+        context = MagicMock()
+        context.__aenter__.return_value = clients.setdefault(service_name, AsyncMock())
+        return context
 
-    with patch("homeassistant.components.bedrock_agent.boto3.Session") as mock_session:
-        mock_session.return_value.client.side_effect = client
+    with patch(
+        "homeassistant.components.bedrock_agent.client._create_session"
+    ) as mock_create_session:
+        mock_create_session.return_value.create_client.side_effect = create_client
         yield clients
 
 
@@ -62,7 +66,7 @@ def mock_clients() -> Generator[dict[str, MagicMock]]:
 async def mock_init_component(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
 ) -> None:
     """Initialize integration."""
     assert await async_setup_component(hass, DOMAIN, {})

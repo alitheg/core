@@ -1,6 +1,6 @@
 """Test the Amazon Bedrock config flow."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from botocore.exceptions import ClientError, EndpointConnectionError
 import pytest
@@ -42,7 +42,7 @@ def _client_error(code: str) -> ClientError:
 
 async def test_form(
     hass: HomeAssistant,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
 ) -> None:
     """Test we get the form and create an entry."""
     result = await hass.config_entries.flow.async_init(
@@ -75,7 +75,7 @@ async def test_form(
 )
 async def test_form_errors(
     hass: HomeAssistant,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     side_effect: Exception,
     error: str,
 ) -> None:
@@ -86,6 +86,7 @@ async def test_form_errors(
 
     with patch(
         "homeassistant.components.bedrock_agent.config_flow.validate_input",
+        new_callable=AsyncMock,
         side_effect=side_effect,
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -103,7 +104,7 @@ async def test_form_errors(
 
 async def test_form_already_configured(
     hass: HomeAssistant,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
 ) -> None:
     """Test we abort if the account is already configured in the region."""
     MockConfigEntry(domain=DOMAIN, data=USER_INPUT).add_to_hass(hass)
@@ -154,7 +155,7 @@ async def test_options_recommended(
 async def test_options_advanced(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test switching to advanced options and selecting a model and agent."""
@@ -182,7 +183,7 @@ async def test_options_advanced(
             }
         ]
     }
-    mock_clients["bedrock-agent"] = MagicMock()
+    mock_clients["bedrock-agent"] = AsyncMock()
     mock_clients["bedrock-agent"].list_agents.return_value = {
         "agentSummaries": [{"agentId": "AGENT123", "agentName": "My agent"}]
     }
@@ -246,14 +247,14 @@ async def test_options_advanced(
 async def test_options_listing_fails(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test the advanced options still work when models can't be listed."""
     mock_clients["bedrock"].list_foundation_models.side_effect = _client_error(
         "AccessDeniedException"
     )
-    mock_clients["bedrock-agent"] = MagicMock()
+    mock_clients["bedrock-agent"] = AsyncMock()
     mock_clients["bedrock-agent"].list_agents.side_effect = _client_error(
         "AccessDeniedException"
     )
@@ -289,7 +290,7 @@ async def test_options_listing_fails(
 async def test_reauth(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
 ) -> None:
     """Test re-authenticating with new credentials."""
     result = await mock_config_entry.start_reauth_flow(hass)
@@ -299,6 +300,7 @@ async def test_reauth(
 
     with patch(
         "homeassistant.components.bedrock_agent.config_flow.validate_input",
+        new_callable=AsyncMock,
         side_effect=_client_error("UnrecognizedClientException"),
     ):
         result = await hass.config_entries.flow.async_configure(

@@ -1,16 +1,25 @@
 """Tests for the Amazon Bedrock integration."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
+from aiobotocore.session import AioSession
 from botocore.exceptions import ClientError, EndpointConnectionError
 import pytest
 
+from homeassistant.components.bedrock_agent.client import (
+    SERVICES,
+    _create_session,
+    create_client,
+)
 from homeassistant.components.bedrock_agent.const import (
+    CONF_ACCESS_KEY_ID,
     CONF_CHAT_MODEL,
+    CONF_SECRET_ACCESS_KEY,
     DOMAIN,
     RECOMMENDED_CHAT_MODEL,
 )
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import CONF_REGION
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.setup import async_setup_component
@@ -32,7 +41,7 @@ def _converse_response(text: str) -> dict:
 async def test_setup_and_unload(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test setting up and unloading the entry."""
@@ -63,12 +72,12 @@ async def test_setup_and_unload(
 async def test_setup_errors(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     side_effect: Exception,
     state: ConfigEntryState,
 ) -> None:
     """Test errors while setting up the entry."""
-    mock_clients["bedrock"] = MagicMock()
+    mock_clients["bedrock"] = AsyncMock()
     mock_clients["bedrock"].list_foundation_models.side_effect = side_effect
 
     assert await async_setup_component(hass, DOMAIN, {})
@@ -84,7 +93,7 @@ async def test_setup_errors(
 async def test_generate_content(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test generating content from text."""
@@ -109,7 +118,7 @@ async def test_generate_content(
 async def test_generate_content_with_images(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test generating content from text and images."""
@@ -156,7 +165,7 @@ async def test_generate_content_with_images(
 async def test_generate_content_model_override(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test overriding the model when generating content."""
@@ -217,7 +226,7 @@ async def test_generate_content_invalid_images(
 async def test_generate_content_errors(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test errors when generating content."""
@@ -270,7 +279,7 @@ async def test_generate_content_invalid_config_entry(
 async def test_generate_content_reauth(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
     code: str,
     reauth: bool,
@@ -290,3 +299,31 @@ async def test_generate_content_reauth(
 
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert bool(flows) is reauth
+
+
+async def test_create_session_preloads_service_data() -> None:
+    """Test creating clients from the session doesn't do blocking I/O.
+
+    The session is created in the executor and should load everything the
+    clients need, so creating them in the event loop doesn't touch the disk.
+    """
+    session = _create_session()
+    assert isinstance(session, AioSession)
+
+    blocked = AssertionError("Blocking I/O in the event loop")
+    with (
+        patch("builtins.open", side_effect=blocked),
+        patch("os.listdir", side_effect=blocked),
+        patch("os.scandir", side_effect=blocked),
+    ):
+        for service in SERVICES:
+            async with create_client(
+                session,
+                {
+                    CONF_REGION: "us-east-1",
+                    CONF_ACCESS_KEY_ID: "AKIAEXAMPLE",
+                    CONF_SECRET_ACCESS_KEY: "secret",
+                },
+                service,
+            ) as client:
+                assert client.meta.service_model.service_name == service

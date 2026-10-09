@@ -1,6 +1,7 @@
 """Tests for the Amazon Bedrock conversation agent."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock, patch
 
 from botocore.exceptions import ClientError
 import pytest
@@ -26,6 +27,11 @@ from tests.common import MockConfigEntry
 
 def _client_error(code: str) -> ClientError:
     return ClientError({"Error": {"Code": code, "Message": "Boom"}}, "operation")
+
+
+async def _event_stream(*events: dict) -> AsyncIterator[dict]:
+    for event in events:
+        yield event
 
 
 def _converse_response(*content: dict) -> dict:
@@ -75,7 +81,7 @@ async def test_entity(
 async def test_conversation_agent(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test a conversation with history."""
@@ -131,7 +137,7 @@ async def test_conversation_agent(
 async def test_error_handling(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test that we handle errors when calling the Converse API."""
@@ -154,7 +160,7 @@ async def test_error_handling(
 async def test_auth_error_starts_reauth(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
     code: str,
     reauth: bool,
@@ -201,7 +207,7 @@ async def test_function_call(
     mock_get_tools,
     hass: HomeAssistant,
     mock_config_entry_with_assist: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test function call from the assistant."""
@@ -336,7 +342,7 @@ async def test_function_call(
 async def test_bedrock_agent(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, MagicMock],
+    mock_clients: dict[str, AsyncMock],
     mock_init_component,
 ) -> None:
     """Test sending the conversation to a Bedrock Agent."""
@@ -347,11 +353,11 @@ async def test_bedrock_agent(
     await hass.async_block_till_done()
     invoke_agent = mock_clients["bedrock-agent-runtime"].invoke_agent
     invoke_agent.return_value = {
-        "completion": [
+        "completion": _event_stream(
             {"chunk": {"bytes": b"Hello "}},
             {"trace": {}},
             {"chunk": {"bytes": b"from the agent"}},
-        ]
+        )
     }
 
     result = await conversation.async_converse(

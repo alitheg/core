@@ -1,7 +1,6 @@
 """Conversation support for Amazon Bedrock."""
 
 from collections.abc import Callable
-from functools import partial
 from typing import Any, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -15,7 +14,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import chat_session, device_registry as dr, intent, llm
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import BedrockConfigEntry, error_message, is_invalid_credentials
+from . import BedrockConfigEntry
+from .client import error_message, is_invalid_credentials
 from .const import (
     CONF_AGENT_ALIAS_ID,
     CONF_AGENT_ID,
@@ -199,22 +199,21 @@ class BedrockConversationEntity(
         options = self.entry.options
         client = self.entry.runtime_data.agent_runtime
 
-        def invoke_agent() -> str:
-            response = client.invoke_agent(
+        try:
+            response = await client.invoke_agent(
                 agentId=options[CONF_AGENT_ID],
                 agentAliasId=options.get(CONF_AGENT_ALIAS_ID) or DEFAULT_AGENT_ALIAS_ID,
                 sessionId=chat_log.conversation_id,
                 inputText=user_input.text,
             )
             # The completion is an event stream that is read while iterating
-            return "".join(
-                event["chunk"]["bytes"].decode()
-                for event in response["completion"]
-                if "chunk" in event
+            text = "".join(
+                [
+                    event["chunk"]["bytes"].decode()
+                    async for event in response["completion"]
+                    if "chunk" in event
+                ]
             )
-
-        try:
-            text = await self.hass.async_add_executor_job(invoke_agent)
         except (ClientError, BotoCoreError) as err:
             self._async_handle_error(err)
             raise HomeAssistantError("Error talking to Amazon Bedrock") from err
@@ -274,9 +273,7 @@ class BedrockConversationEntity(
         for _iteration in range(MAX_TOOL_ITERATIONS):
             messages = _convert_content(chat_log.content)
             try:
-                response = await self.hass.async_add_executor_job(
-                    partial(client.converse, messages=messages, **model_args)
-                )
+                response = await client.converse(messages=messages, **model_args)
             except (ClientError, BotoCoreError) as err:
                 self._async_handle_error(err)
                 raise HomeAssistantError("Error talking to Amazon Bedrock") from err
