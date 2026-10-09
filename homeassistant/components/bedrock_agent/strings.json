@@ -1,0 +1,86 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "region": "Region",
+          "access_key_id": "Access key ID",
+          "secret_access_key": "Secret access key"
+        },
+        "data_description": {
+          "region": "The AWS region to use Amazon Bedrock in. Not all models are available in every region.",
+          "access_key_id": "The access key ID of an IAM user that is allowed to use Amazon Bedrock.",
+          "secret_access_key": "The secret access key belonging to the access key ID."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_account%]"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "prompt": "Instructions",
+          "chat_model": "[%key:common::generic::model%]",
+          "max_tokens": "Maximum tokens to return in response",
+          "temperature": "Temperature",
+          "top_p": "Top P",
+          "llm_hass_api": "[%key:common::config_flow::data::llm_hass_api%]",
+          "recommended": "Recommended model settings",
+          "agent_id": "Bedrock Agent",
+          "agent_alias_id": "Bedrock Agent alias ID"
+        },
+        "data_description": {
+          "prompt": "Instruct how the LLM should respond. This can be a template.",
+          "llm_hass_api": "Allow the LLM to control Home Assistant using the selected API.",
+          "recommended": "Use the recommended model and settings. Disable to choose a model, tune the settings or use a Bedrock Agent.",
+          "chat_model": "The model ID or inference profile ID to use with the Converse API.",
+          "max_tokens": "The maximum number of tokens the model may generate in a response.",
+          "temperature": "Controls the randomness of the response. Lower values make the response more focused.",
+          "top_p": "Limits the response to the most likely tokens whose probabilities add up to this value.",
+          "agent_id": "Send conversations to a Bedrock Agent instead of a model. The agent uses its own instructions, tools and knowledge bases, so the model, instructions and Home Assistant control settings are ignored.",
+          "agent_alias_id": "The alias of the Bedrock Agent to use. TSTALIASID is the working draft of the agent."
+        }
+      }
+    }
+  },
+  "services": {
+    "generate_content": {
+      "name": "Generate content",
+      "description": "Generate content from a prompt consisting of text and optionally images.",
+      "fields": {
+        "config_entry": {
+          "name": "Config entry",
+          "description": "The config entry to use for this action."
+        },
+        "prompt": {
+          "name": "Prompt",
+          "description": "The prompt.",
+          "example": "Describe what you see in these images"
+        },
+        "model": {
+          "name": "[%key:common::generic::model%]",
+          "description": "The model ID to use. Defaults to the model of the conversation agent.",
+          "example": "anthropic.claude-3-haiku-20240307-v1:0"
+        },
+        "image_filename": {
+          "name": "Image filename",
+          "description": "Images to include in the prompt.",
+          "example": "/config/www/image.jpg"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_config_entry": {
+      "message": "Invalid config entry provided. Got {config_entry}"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+generate_content:
+  fields:
+    config_entry:
+      required: true
+      selector:
+        config_entry:
+          integration: bedrock_agent
+    prompt:
+      required: true
+      selector:
+        text:
+          multiline: true
+    model:
+      required: false
+      selector:
+        text:
+    image_filename:
+      required: false
+      selector:
+        object:

@@ -1,0 +1,123 @@
+rules:
+  # Bronze
+  action-setup: done
+  appropriate-polling:
+    status: exempt
+    comment: |
+      The integration does not poll.
+  brands:
+    status: done
+    comment: |
+      Needs a companion PR to home-assistant/brands.
+  common-modules: done
+  config-flow-test-coverage: done
+  config-flow: done
+  dependency-transparency: done
+  docs-actions:
+    status: done
+    comment: |
+      Needs a companion PR to home-assistant/home-assistant.io.
+  docs-high-level-description:
+    status: done
+    comment: |
+      Needs a companion PR to home-assistant/home-assistant.io.
+  docs-installation-instructions:
+    status: done
+    comment: |
+      Needs a companion PR to home-assistant/home-assistant.io.
+  docs-removal-instructions:
+    status: done
+    comment: |
+      Needs a companion PR to home-assistant/home-assistant.io.
+  entity-event-setup:
+    status: exempt
+    comment: |
+      No explicit event subscriptions.
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup: done
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: todo
+  docs-installation-parameters: todo
+  entity-unavailable:
+    status: exempt
+    comment: |
+      The conversation entity is a cloud service without state.
+  integration-owner: done
+  log-when-unavailable:
+    status: exempt
+    comment: |
+      The conversation entity is a cloud service without state.
+  parallel-updates: done
+  reauthentication-flow: todo
+  test-coverage: done
+
+  # Gold
+  devices: done
+  diagnostics: todo
+  discovery-update-info:
+    status: exempt
+    comment: |
+      Cloud service, no discovery.
+  discovery:
+    status: exempt
+    comment: |
+      Cloud service, no discovery.
+  docs-data-update: todo
+  docs-examples: todo
+  docs-known-limitations: todo
+  docs-supported-devices:
+    status: exempt
+    comment: |
+      Cloud service, no devices.
+  docs-supported-functions: todo
+  docs-troubleshooting: todo
+  docs-use-cases: todo
+  dynamic-devices:
+    status: exempt
+    comment: |
+      Cloud service, one device per config entry.
+  entity-category:
+    status: exempt
+    comment: |
+      The conversation entity is the primary entity.
+  entity-device-class:
+    status: exempt
+    comment: |
+      Conversation entities have no device class.
+  entity-disabled-by-default:
+    status: exempt
+    comment: |
+      No noisy/non-essential entities.
+  entity-translations:
+    status: exempt
+    comment: |
+      The entity uses the device name.
+  exception-translations: todo
+  icon-translations: done
+  reconfiguration-flow: todo
+  repair-issues:
+    status: exempt
+    comment: |
+      No repairs/issues.
+  stale-devices:
+    status: exempt
+    comment: |
+      Cloud service, one device per config entry.
+
+  # Platinum
+  async-dependency:
+    status: todo
+    comment: |
+      boto3 is synchronous, calls are run in the executor.
+  inject-websession:
+    status: exempt
+    comment: |
+      boto3 does not support injecting a websession.
+  strict-typing: todo
