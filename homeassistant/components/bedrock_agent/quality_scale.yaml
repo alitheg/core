@@ -1,6 +1,9 @@
 rules:
   # Bronze
-  action-setup: done
+  action-setup:
+    status: exempt
+    comment: |
+      The integration has no custom actions.
   appropriate-polling:
     status: exempt
     comment: |
@@ -14,9 +17,13 @@ rules:
   config-flow: done
   dependency-transparency: done
   docs-actions:
-    status: done
+    status: exempt
     comment: |
-      Needs a companion PR to home-assistant/home-assistant.io.
+      The integration has no custom actions.
+  docs-conditions:
+    status: exempt
+    comment: |
+      The integration does not provide conditions.
   docs-high-level-description:
     status: done
     comment: |
@@ -29,6 +36,10 @@ rules:
     status: done
     comment: |
       Needs a companion PR to home-assistant/home-assistant.io.
+  docs-triggers:
+    status: exempt
+    comment: |
+      The integration does not provide triggers.
   entity-event-setup:
     status: exempt
     comment: |
@@ -41,7 +52,10 @@ rules:
   unique-config-entry: done
 
   # Silver
-  action-exceptions: done
+  action-exceptions:
+    status: exempt
+    comment: |
+      The integration has no custom actions.
   config-entry-unloading: done
   docs-configuration-parameters:
     status: done
@@ -88,7 +102,7 @@ rules:
   dynamic-devices:
     status: exempt
     comment: |
-      Cloud service, one device per config entry.
+      Devices are created for subentries, which reload the config entry.
   entity-category:
     status: exempt
     comment: |
@@ -105,8 +119,11 @@ rules:
     status: exempt
     comment: |
       The entity uses the device name.
-  exception-translations: todo
-  icon-translations: done
+  exception-translations: done
+  icon-translations:
+    status: exempt
+    comment: |
+      The entities use the default icons of their platform.
   reconfiguration-flow: todo
   repair-issues:
     status: exempt
@@ -115,7 +132,7 @@ rules:
   stale-devices:
     status: exempt
     comment: |
-      Cloud service, one device per config entry.
+      Devices are removed together with their subentry.
 
   # Platinum
   async-dependency: done

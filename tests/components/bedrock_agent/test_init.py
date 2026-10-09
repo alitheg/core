@@ -1,28 +1,24 @@
-"""Tests for the Amazon Bedrock integration."""
+"""Tests for setting up the Amazon Bedrock integration."""
 
+import builtins
+import os
+import threading
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from aiobotocore.session import AioSession
 from botocore.exceptions import ClientError, EndpointConnectionError
 import pytest
 
 from homeassistant.components.bedrock_agent.client import (
-    SERVICES,
     _create_session,
-    create_client,
+    async_create_client,
 )
-from homeassistant.components.bedrock_agent.const import (
-    CONF_ACCESS_KEY_ID,
-    CONF_CHAT_MODEL,
-    CONF_SECRET_ACCESS_KEY,
-    DOMAIN,
-    RECOMMENDED_CHAT_MODEL,
-)
+from homeassistant.components.bedrock_agent.const import DOMAIN
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_REGION
+from homeassistant.const import CONF_MODEL
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.setup import async_setup_component
+
+from .conftest import ENTRY_DATA
 
 from tests.common import MockConfigEntry
 
@@ -31,18 +27,11 @@ def _client_error(code: str) -> ClientError:
     return ClientError({"Error": {"Code": code, "Message": "Boom"}}, "operation")
 
 
-def _converse_response(text: str) -> dict:
-    return {
-        "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
-        "stopReason": "end_turn",
-    }
-
-
 async def test_setup_and_unload(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, AsyncMock],
-    mock_init_component,
+    mock_clients: dict[str, Any],
+    mock_init_component: None,
 ) -> None:
     """Test setting up and unloading the entry."""
     assert mock_config_entry.state is ConfigEntryState.LOADED
@@ -51,279 +40,105 @@ async def test_setup_and_unload(
         mock_config_entry.runtime_data.agent_runtime
         is mock_clients["bedrock-agent-runtime"]
     )
-    assert hass.states.get("conversation.amazon_bedrock")
+    assert hass.states.get("conversation.claude")
+    assert hass.states.get("conversation.my_agent")
+    assert hass.states.get("ai_task.nova")
 
     assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
     assert mock_config_entry.state is ConfigEntryState.NOT_LOADED
+    mock_clients["bedrock-runtime.context"].__aexit__.assert_awaited_once()
+    mock_clients["bedrock-agent-runtime.context"].__aexit__.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
-    ("side_effect", "state"),
+    ("side_effect", "state", "reauth"),
     [
-        (_client_error("UnrecognizedClientException"), ConfigEntryState.SETUP_ERROR),
-        (_client_error("AccessDeniedException"), ConfigEntryState.SETUP_ERROR),
-        (_client_error("ThrottlingException"), ConfigEntryState.SETUP_RETRY),
+        (
+            _client_error("UnrecognizedClientException"),
+            ConfigEntryState.SETUP_ERROR,
+            True,
+        ),
+        (_client_error("AccessDeniedException"), ConfigEntryState.SETUP_ERROR, True),
+        (_client_error("ThrottlingException"), ConfigEntryState.SETUP_RETRY, False),
         (
             EndpointConnectionError(endpoint_url="https://example.com"),
             ConfigEntryState.SETUP_RETRY,
+            False,
         ),
     ],
 )
 async def test_setup_errors(
     hass: HomeAssistant,
+    setup_ha: None,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, AsyncMock],
+    mock_clients: dict[str, Any],
     side_effect: Exception,
     state: ConfigEntryState,
+    reauth: bool,
 ) -> None:
     """Test errors while setting up the entry."""
     mock_clients["bedrock"] = AsyncMock()
     mock_clients["bedrock"].list_foundation_models.side_effect = side_effect
 
-    assert await async_setup_component(hass, DOMAIN, {})
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
     assert mock_config_entry.state is state
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert [flow["context"]["source"] for flow in flows] == (
-        ["reauth"] if state is ConfigEntryState.SETUP_ERROR else []
+        ["reauth"] if reauth else []
     )
 
 
-async def test_generate_content(
+async def test_reload_on_subentry_update(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, AsyncMock],
-    mock_init_component,
+    mock_init_component: None,
 ) -> None:
-    """Test generating content from text."""
-    converse = mock_clients["bedrock-runtime"].converse
-    converse.return_value = _converse_response("A haiku about lights")
+    """Test the entry is reloaded when a subentry is updated."""
+    subentry = mock_config_entry.subentries["ai_task_id"]
 
-    response = await hass.services.async_call(
-        DOMAIN,
-        "generate_content",
-        {"config_entry": mock_config_entry.entry_id, "prompt": "Write a haiku"},
-        blocking=True,
-        return_response=True,
-    )
-
-    assert response == {"text": "A haiku about lights"}
-    converse.assert_called_once_with(
-        modelId=RECOMMENDED_CHAT_MODEL,
-        messages=[{"role": "user", "content": [{"text": "Write a haiku"}]}],
-    )
-
-
-async def test_generate_content_with_images(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, AsyncMock],
-    mock_init_component,
-) -> None:
-    """Test generating content from text and images."""
-    hass.config_entries.async_update_entry(
-        mock_config_entry, options={CONF_CHAT_MODEL: "amazon.nova-lite-v1:0"}
+    hass.config_entries.async_update_subentry(
+        mock_config_entry,
+        subentry,
+        data={CONF_MODEL: "amazon.nova-pro-v1:0"},
     )
     await hass.async_block_till_done()
-    converse = mock_clients["bedrock-runtime"].converse
-    converse.return_value = _converse_response("A cat and a dog")
 
-    with (
-        patch("pathlib.Path.exists", return_value=True),
-        patch("pathlib.Path.read_bytes", side_effect=[b"jpeg", b"png"]),
-        patch.object(hass.config, "is_allowed_path", return_value=True),
-    ):
-        response = await hass.services.async_call(
-            DOMAIN,
-            "generate_content",
-            {
-                "config_entry": mock_config_entry.entry_id,
-                "prompt": "Describe these images",
-                "image_filename": ["cat.jpg", "dog.png"],
-            },
-            blocking=True,
-            return_response=True,
-        )
-
-    assert response == {"text": "A cat and a dog"}
-    converse.assert_called_once_with(
-        modelId="amazon.nova-lite-v1:0",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"text": "Describe these images"},
-                    {"image": {"format": "jpeg", "source": {"bytes": b"jpeg"}}},
-                    {"image": {"format": "png", "source": {"bytes": b"png"}}},
-                ],
-            }
-        ],
-    )
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    assert mock_config_entry.runtime_data.runtime  # Clients were recreated
 
 
-async def test_generate_content_model_override(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, AsyncMock],
-    mock_init_component,
-) -> None:
-    """Test overriding the model when generating content."""
-    converse = mock_clients["bedrock-runtime"].converse
-    converse.return_value = _converse_response("Hello")
+async def test_create_clients_without_blocking_io(hass: HomeAssistant) -> None:
+    """Test creating the real clients doesn't do blocking I/O in the event loop.
 
-    await hass.services.async_call(
-        DOMAIN,
-        "generate_content",
-        {
-            "config_entry": mock_config_entry.entry_id,
-            "prompt": "Hi",
-            "model": "mistral.mistral-large-2402-v1:0",
-        },
-        blocking=True,
-        return_response=True,
-    )
-
-    assert converse.call_args.kwargs["modelId"] == "mistral.mistral-large-2402-v1:0"
-
-
-@pytest.mark.parametrize(
-    ("allowed", "exists", "filename", "message"),
-    [
-        (False, True, "cat.jpg", "no access to path"),
-        (True, False, "cat.jpg", "does not exist"),
-        (True, True, "cat.txt", "is not a supported image"),
-    ],
-)
-async def test_generate_content_invalid_images(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_init_component,
-    allowed: bool,
-    exists: bool,
-    filename: str,
-    message: str,
-) -> None:
-    """Test generating content with invalid images."""
-    with (
-        patch("pathlib.Path.exists", return_value=exists),
-        patch.object(hass.config, "is_allowed_path", return_value=allowed),
-        pytest.raises(HomeAssistantError, match=message),
-    ):
-        await hass.services.async_call(
-            DOMAIN,
-            "generate_content",
-            {
-                "config_entry": mock_config_entry.entry_id,
-                "prompt": "Describe this",
-                "image_filename": filename,
-            },
-            blocking=True,
-            return_response=True,
-        )
-
-
-async def test_generate_content_errors(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, AsyncMock],
-    mock_init_component,
-) -> None:
-    """Test errors when generating content."""
-    converse = mock_clients["bedrock-runtime"].converse
-    converse.side_effect = _client_error("ValidationException")
-
-    with pytest.raises(HomeAssistantError, match="Error generating content: Boom"):
-        await hass.services.async_call(
-            DOMAIN,
-            "generate_content",
-            {"config_entry": mock_config_entry.entry_id, "prompt": "Hi"},
-            blocking=True,
-            return_response=True,
-        )
-
-    converse.side_effect = None
-    converse.return_value = _converse_response("")
-    with pytest.raises(HomeAssistantError, match="Unknown error generating content"):
-        await hass.services.async_call(
-            DOMAIN,
-            "generate_content",
-            {"config_entry": mock_config_entry.entry_id, "prompt": "Hi"},
-            blocking=True,
-            return_response=True,
-        )
-
-
-async def test_generate_content_invalid_config_entry(
-    hass: HomeAssistant,
-    mock_init_component,
-) -> None:
-    """Test generating content with a config entry from another integration."""
-    other_entry = MockConfigEntry(domain="other")
-    other_entry.add_to_hass(hass)
-
-    with pytest.raises(ServiceValidationError):
-        await hass.services.async_call(
-            DOMAIN,
-            "generate_content",
-            {"config_entry": other_entry.entry_id, "prompt": "Hi"},
-            blocking=True,
-            return_response=True,
-        )
-
-
-@pytest.mark.parametrize(
-    ("code", "reauth"),
-    [("UnrecognizedClientException", True), ("AccessDeniedException", False)],
-)
-async def test_generate_content_reauth(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_clients: dict[str, AsyncMock],
-    mock_init_component,
-    code: str,
-    reauth: bool,
-) -> None:
-    """Test reauth is only started when the credentials are invalid."""
-    mock_clients["bedrock-runtime"].converse.side_effect = _client_error(code)
-
-    with pytest.raises(HomeAssistantError):
-        await hass.services.async_call(
-            DOMAIN,
-            "generate_content",
-            {"config_entry": mock_config_entry.entry_id, "prompt": "Hi"},
-            blocking=True,
-            return_response=True,
-        )
-    await hass.async_block_till_done()
-
-    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
-    assert bool(flows) is reauth
-
-
-async def test_create_session_preloads_service_data() -> None:
-    """Test creating clients from the session doesn't do blocking I/O.
-
-    The session is created in the executor and should load everything the
-    clients need, so creating them in the event loop doesn't touch the disk.
+    botocore reads the service definitions from disk when a client is created,
+    which must happen in the executor instead of the event loop.
     """
-    session = _create_session()
-    assert isinstance(session, AioSession)
+    hass.data["bedrock_agent_session"] = await hass.async_add_executor_job(
+        _create_session
+    )
+    event_loop_thread = threading.current_thread()
 
-    blocked = AssertionError("Blocking I/O in the event loop")
+    def block_in_event_loop(func: Any) -> Any:
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if threading.current_thread() is event_loop_thread:
+                raise AssertionError(f"Blocking I/O in the event loop: {args}")
+            return func(*args, **kwargs)
+
+        return wrapper
+
     with (
-        patch("builtins.open", side_effect=blocked),
-        patch("os.listdir", side_effect=blocked),
-        patch("os.scandir", side_effect=blocked),
+        patch("builtins.open", block_in_event_loop(builtins.open)),
+        patch("os.listdir", block_in_event_loop(os.listdir)),
+        patch("os.scandir", block_in_event_loop(os.scandir)),
     ):
-        for service in SERVICES:
-            async with create_client(
-                session,
-                {
-                    CONF_REGION: "us-east-1",
-                    CONF_ACCESS_KEY_ID: "AKIAEXAMPLE",
-                    CONF_SECRET_ACCESS_KEY: "secret",
-                },
-                service,
-            ) as client:
+        for service in (
+            "bedrock",
+            "bedrock-agent",
+            "bedrock-agent-runtime",
+            "bedrock-runtime",
+        ):
+            async with await async_create_client(hass, ENTRY_DATA, service) as client:
                 assert client.meta.service_model.service_name == service

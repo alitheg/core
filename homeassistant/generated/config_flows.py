@@ -102,6 +102,7 @@ FLOWS = {
         "balboa",
         "bang_olufsen",
         "bayesian",
+        "bedrock_agent",
         "besen",
         "bitvis",
         "blebox",

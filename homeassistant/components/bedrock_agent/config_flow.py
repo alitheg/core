@@ -1,99 +1,106 @@
 """Config flow for Amazon Bedrock integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 import logging
-from types import MappingProxyType
-from typing import Any
+from typing import Any, override
 
 from botocore.exceptions import BotoCoreError, ClientError
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import (
+    SOURCE_USER,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlow,
+    ConfigSubentryFlow,
+    SubentryFlowResult,
 )
-from homeassistant.const import CONF_LLM_HASS_API, CONF_REGION
-from homeassistant.core import HomeAssistant
+from homeassistant.const import (
+    CONF_LLM_HASS_API,
+    CONF_MODEL,
+    CONF_NAME,
+    CONF_PROMPT,
+    CONF_REGION,
+)
+from homeassistant.core import callback
 from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
+    NumberSelectorMode,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
     TemplateSelector,
-    TextSelector,
-    TextSelectorConfig,
-    TextSelectorType,
 )
-from homeassistant.helpers.typing import VolDictType
 
-from .client import async_get_session, create_client, is_auth_error
+from .client import (
+    async_list_agents,
+    async_list_models,
+    async_validate_credentials,
+    is_auth_error,
+)
 from .const import (
     CONF_ACCESS_KEY_ID,
     CONF_AGENT_ALIAS_ID,
     CONF_AGENT_ID,
-    CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
-    CONF_PROMPT,
-    CONF_RECOMMENDED,
     CONF_SECRET_ACCESS_KEY,
     CONF_TEMPERATURE,
-    CONF_TOP_P,
     DEFAULT_AGENT_ALIAS_ID,
+    DEFAULT_AI_TASK_NAME,
+    DEFAULT_CONVERSATION_NAME,
+    DEFAULT_CONVERSATION_OPTIONS,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_TEMPERATURE,
     DOMAIN,
-    RECOMMENDED_CHAT_MODEL,
-    RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_TEMPERATURE,
-    RECOMMENDED_TOP_P,
+    PREFERRED_MODELS,
     REGIONS,
+    SUBENTRY_AGENT,
+    SUBENTRY_AI_TASK,
+    SUBENTRY_CONVERSATION,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_USER_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_REGION, default="us-east-1"): SelectSelector(
+        probatio.Required(CONF_REGION, default="us-east-1"): SelectSelector(
             SelectSelectorConfig(
                 options=REGIONS, custom_value=True, mode=SelectSelectorMode.DROPDOWN
             )
         ),
-        vol.Required(CONF_ACCESS_KEY_ID): str,
-        vol.Required(CONF_SECRET_ACCESS_KEY): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.PASSWORD)
-        ),
+        probatio.Required(CONF_ACCESS_KEY_ID): str,
+        probatio.Required(probatio.Secret(CONF_SECRET_ACCESS_KEY)): str,
     }
 )
 
-STEP_REAUTH_DATA_SCHEMA = vol.Schema(
+STEP_REAUTH_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_ACCESS_KEY_ID): str,
-        vol.Required(CONF_SECRET_ACCESS_KEY): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.PASSWORD)
-        ),
+        probatio.Required(CONF_ACCESS_KEY_ID): str,
+        probatio.Required(probatio.Secret(CONF_SECRET_ACCESS_KEY)): str,
     }
 )
 
-RECOMMENDED_OPTIONS = {
-    CONF_RECOMMENDED: True,
-    CONF_LLM_HASS_API: llm.LLM_API_ASSIST,
-    CONF_PROMPT: llm.DEFAULT_INSTRUCTIONS_PROMPT,
-}
+
+def _model_selector(models: list[SelectOptionDict]) -> SelectSelector:
+    """Return a selector for a model, allowing any model ID to be entered."""
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=models, custom_value=True, mode=SelectSelectorMode.DROPDOWN
+        )
+    )
 
 
-async def validate_input(hass: HomeAssistant, data: Mapping[str, Any]) -> None:
-    """Validate the user input allows us to connect.
-
-    Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
-    """
-    session = await async_get_session(hass)
-    async with create_client(session, data, "bedrock") as bedrock:
-        await bedrock.list_foundation_models(byOutputModality="TEXT")
+def _default_model(models: list[SelectOptionDict]) -> str | None:
+    """Return the preferred model that is available."""
+    for preferred in PREFERRED_MODELS:
+        for model in models:
+            if preferred in model["value"]:
+                return model["value"]
+    return models[0]["value"] if models else None
 
 
 class BedrockConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -101,16 +108,31 @@ class BedrockConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def _async_validate(self, data: dict[str, Any]) -> dict[str, str]:
+    def __init__(self) -> None:
+        """Initialize the config flow."""
+        self.data: dict[str, Any] = {}
+        self.models: list[SelectOptionDict] = []
+
+    @classmethod
+    @callback
+    @override
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        """Return subentries supported by this handler."""
+        return {
+            SUBENTRY_CONVERSATION: LLMSubentryFlowHandler,
+            SUBENTRY_AI_TASK: LLMSubentryFlowHandler,
+            SUBENTRY_AGENT: AgentSubentryFlowHandler,
+        }
+
+    async def _async_validate(self, data: Mapping[str, Any]) -> dict[str, str]:
         """Validate the credentials and return any errors."""
         try:
-            await validate_input(self.hass, data)
-        except ClientError as err:
+            await async_validate_credentials(self.hass, data)
+        except (ClientError, BotoCoreError) as err:
             if is_auth_error(err):
                 return {"base": "invalid_auth"}
-            _LOGGER.debug("Error connecting to Amazon Bedrock: %s", err)
-            return {"base": "cannot_connect"}
-        except BotoCoreError as err:
             _LOGGER.debug("Error connecting to Amazon Bedrock: %s", err)
             return {"base": "cannot_connect"}
         except Exception:
@@ -118,10 +140,11 @@ class BedrockConfigFlow(ConfigFlow, domain=DOMAIN):
             return {"base": "unknown"}
         return {}
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial step."""
+        """Ask for the region and credentials."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -132,16 +155,59 @@ class BedrockConfigFlow(ConfigFlow, domain=DOMAIN):
                 }
             )
             if not (errors := await self._async_validate(user_input)):
-                return self.async_create_entry(
-                    title=f"Amazon Bedrock ({user_input[CONF_REGION]})",
-                    data=user_input,
-                    options=RECOMMENDED_OPTIONS,
-                )
+                self.data = user_input
+                return await self.async_step_model()
 
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(
                 STEP_USER_DATA_SCHEMA, user_input
+            ),
+            errors=errors,
+        )
+
+    async def async_step_model(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask which model to use for the default agents."""
+        if user_input is not None:
+            model = user_input[CONF_MODEL]
+            return self.async_create_entry(
+                title=f"Amazon Bedrock ({self.data[CONF_REGION]})",
+                data=self.data,
+                subentries=[
+                    {
+                        "subentry_type": SUBENTRY_CONVERSATION,
+                        "data": {**DEFAULT_CONVERSATION_OPTIONS, CONF_MODEL: model},
+                        "title": DEFAULT_CONVERSATION_NAME,
+                        "unique_id": None,
+                    },
+                    {
+                        "subentry_type": SUBENTRY_AI_TASK,
+                        "data": {CONF_MODEL: model},
+                        "title": DEFAULT_AI_TASK_NAME,
+                        "unique_id": None,
+                    },
+                ],
+            )
+
+        errors: dict[str, str] = {}
+        try:
+            self.models = await async_list_models(self.hass, self.data)
+        except (ClientError, BotoCoreError) as err:
+            # A model ID can still be entered by hand
+            _LOGGER.warning("Unable to list Amazon Bedrock models: %s", err)
+            self.models = []
+            errors["base"] = "list_models_failed"
+
+        return self.async_show_form(
+            step_id="model",
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_MODEL, default=_default_model(self.models)
+                    ): _model_selector(self.models),
+                }
             ),
             errors=errors,
         )
@@ -175,202 +241,164 @@ class BedrockConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    @staticmethod
-    def async_get_options_flow(
-        config_entry: ConfigEntry,
-    ) -> OptionsFlow:
-        """Create the options flow."""
-        return BedrockOptionsFlow(config_entry)
 
+class BedrockSubentryFlowHandler(ConfigSubentryFlow):
+    """Base class for Amazon Bedrock subentry flows."""
 
-class BedrockOptionsFlow(OptionsFlow):
-    """Amazon Bedrock config flow options handler."""
+    options: dict[str, Any]
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.last_rendered_recommended = config_entry.options.get(
-            CONF_RECOMMENDED, False
-        )
-        self.models: list[SelectOptionDict] | None = None
-        self.agents: list[SelectOptionDict] | None = None
+    @property
+    def _is_new(self) -> bool:
+        """Return if this is a new subentry."""
+        return self.source == SOURCE_USER
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Add a subentry."""
+        self.options = {}
+        return await self.async_step_init()
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Reconfigure a subentry."""
+        self.options = dict(self._get_reconfigure_subentry().data)
+        return await self.async_step_init()
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Manage the options."""
-        options: dict[str, Any] | MappingProxyType[str, Any] = self.config_entry.options
+    ) -> SubentryFlowResult:
+        """Configure the subentry."""
+        raise NotImplementedError
+
+    def _async_save(self, user_input: dict[str, Any]) -> SubentryFlowResult:
+        """Create or update the subentry."""
+        if self._is_new:
+            return self.async_create_entry(
+                title=user_input.pop(CONF_NAME), data=user_input
+            )
+        return self.async_update_and_abort(
+            self._get_entry(), self._get_reconfigure_subentry(), data=user_input
+        )
+
+    def _name_schema(self, default_name: str) -> dict[Any, Any]:
+        """Return the schema for the name, only shown for new subentries."""
+        if not self._is_new:
+            return {}
+        return {probatio.Required(CONF_NAME, default=default_name): str}
+
+
+class LLMSubentryFlowHandler(BedrockSubentryFlowHandler):
+    """Flow for conversation agents and AI tasks using a model."""
+
+    @override
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Configure the model and its settings."""
+        entry = self._get_entry()
+        if entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="entry_not_loaded")
 
         if user_input is not None:
-            if user_input[CONF_RECOMMENDED] == self.last_rendered_recommended:
-                if user_input[CONF_LLM_HASS_API] == "none":
-                    user_input.pop(CONF_LLM_HASS_API)
-                if not user_input.get(CONF_AGENT_ID):
-                    user_input.pop(CONF_AGENT_ID, None)
-                    user_input.pop(CONF_AGENT_ALIAS_ID, None)
-                return self.async_create_entry(title="", data=user_input)
+            if not user_input.get(CONF_LLM_HASS_API):
+                user_input.pop(CONF_LLM_HASS_API, None)
+            return self._async_save(user_input)
 
-            # Re-render the options again, now with the recommended options shown/hidden
-            self.last_rendered_recommended = user_input[CONF_RECOMMENDED]
+        try:
+            models = await async_list_models(self.hass, entry.data)
+        except (ClientError, BotoCoreError) as err:
+            _LOGGER.warning("Unable to list Amazon Bedrock models: %s", err)
+            models = []
 
-            options = {
-                CONF_RECOMMENDED: user_input[CONF_RECOMMENDED],
-                CONF_PROMPT: user_input[CONF_PROMPT],
-                CONF_LLM_HASS_API: user_input[CONF_LLM_HASS_API],
-            }
+        is_conversation = self._subentry_type == SUBENTRY_CONVERSATION
+        if self._is_new and is_conversation:
+            self.options = dict(DEFAULT_CONVERSATION_OPTIONS)
 
-        if not options.get(CONF_RECOMMENDED) and self.models is None:
-            self.models, self.agents = await _async_fetch_models_and_agents(
-                self.hass, self.config_entry.data
+        schema: dict[Any, Any] = self._name_schema(
+            DEFAULT_CONVERSATION_NAME if is_conversation else DEFAULT_AI_TASK_NAME
+        )
+        schema[
+            probatio.Required(
+                CONF_MODEL, default=self.options.get(CONF_MODEL, _default_model(models))
+            )
+        ] = _model_selector(models)
+
+        if is_conversation:
+            hass_apis = [
+                SelectOptionDict(label=api.name, value=api.id)
+                for api in llm.async_get_apis(self.hass)
+            ]
+            valid_api_ids = {api["value"] for api in hass_apis}
+            schema.update(
+                {
+                    probatio.Optional(CONF_PROMPT): TemplateSelector(),
+                    probatio.Optional(
+                        CONF_LLM_HASS_API,
+                        default=[
+                            api
+                            for api in self.options.get(CONF_LLM_HASS_API, [])
+                            if api in valid_api_ids
+                        ],
+                    ): SelectSelector(
+                        SelectSelectorConfig(options=hass_apis, multiple=True)
+                    ),
+                    probatio.Optional(
+                        CONF_TEMPERATURE, default=DEFAULT_TEMPERATURE
+                    ): NumberSelector(NumberSelectorConfig(min=0, max=1, step=0.05)),
+                }
             )
 
-        schema = bedrock_config_option_schema(
-            self.hass, options, self.models or [], self.agents or []
+        schema[probatio.Optional(CONF_MAX_TOKENS, default=DEFAULT_MAX_TOKENS)] = (
+            NumberSelector(
+                NumberSelectorConfig(min=1, step=1, mode=NumberSelectorMode.BOX)
+            )
         )
+
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(schema),
-        )
-
-
-async def _async_fetch_models_and_agents(
-    hass: HomeAssistant, data: Mapping[str, Any]
-) -> tuple[list[SelectOptionDict], list[SelectOptionDict]]:
-    """Fetch the available models and agents.
-
-    Failures are not fatal, the user can still enter a model ID by hand.
-    """
-    session = await async_get_session(hass)
-    models: list[SelectOptionDict] = []
-    agents: list[SelectOptionDict] = []
-
-    try:
-        async with create_client(session, data, "bedrock") as bedrock:
-            response = await bedrock.list_foundation_models(
-                byOutputModality="TEXT", byInferenceType="ON_DEMAND"
-            )
-            models.extend(
-                SelectOptionDict(
-                    value=model["modelId"],
-                    label=f"{model['providerName']} {model['modelName']}",
-                )
-                for model in response["modelSummaries"]
-                if model.get("modelLifecycle", {}).get("status") != "LEGACY"
-            )
-            # Newer models are only available through cross-region inference profiles
-            if hasattr(bedrock, "list_inference_profiles"):
-                response = await bedrock.list_inference_profiles()
-                models.extend(
-                    SelectOptionDict(
-                        value=profile["inferenceProfileId"],
-                        label=profile["inferenceProfileName"],
-                    )
-                    for profile in response["inferenceProfileSummaries"]
-                )
-    except (ClientError, BotoCoreError) as err:
-        _LOGGER.warning("Unable to list Amazon Bedrock models: %s", err)
-
-    try:
-        async with create_client(session, data, "bedrock-agent") as bedrock_agent:
-            response = await bedrock_agent.list_agents()
-            agents.extend(
-                SelectOptionDict(value=agent["agentId"], label=agent["agentName"])
-                for agent in response["agentSummaries"]
-            )
-    except (ClientError, BotoCoreError) as err:
-        _LOGGER.debug("Unable to list Amazon Bedrock agents: %s", err)
-
-    return sorted(models, key=lambda model: model["label"]), agents
-
-
-def bedrock_config_option_schema(
-    hass: HomeAssistant,
-    options: dict[str, Any] | MappingProxyType[str, Any],
-    models: list[SelectOptionDict],
-    agents: list[SelectOptionDict],
-) -> VolDictType:
-    """Return a schema for Amazon Bedrock completion options."""
-    hass_apis: list[SelectOptionDict] = [
-        SelectOptionDict(
-            label="No control",
-            value="none",
-        )
-    ]
-    hass_apis.extend(
-        SelectOptionDict(
-            label=api.name,
-            value=api.id,
-        )
-        for api in llm.async_get_apis(hass)
-    )
-
-    schema: VolDictType = {
-        vol.Optional(
-            CONF_PROMPT,
-            description={
-                "suggested_value": options.get(
-                    CONF_PROMPT, llm.DEFAULT_INSTRUCTIONS_PROMPT
-                )
-            },
-        ): TemplateSelector(),
-        vol.Optional(
-            CONF_LLM_HASS_API,
-            description={"suggested_value": options.get(CONF_LLM_HASS_API)},
-            default="none",
-        ): SelectSelector(SelectSelectorConfig(options=hass_apis)),
-        vol.Required(
-            CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, False)
-        ): bool,
-    }
-
-    if options.get(CONF_RECOMMENDED):
-        return schema
-
-    schema.update(
-        {
-            vol.Optional(
-                CONF_CHAT_MODEL,
-                description={"suggested_value": options.get(CONF_CHAT_MODEL)},
-                default=RECOMMENDED_CHAT_MODEL,
-            ): SelectSelector(
-                SelectSelectorConfig(
-                    options=models,
-                    custom_value=True,
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
+            data_schema=self.add_suggested_values_to_schema(
+                probatio.Schema(schema), self.options
             ),
-            vol.Optional(
-                CONF_MAX_TOKENS,
-                description={"suggested_value": options.get(CONF_MAX_TOKENS)},
-                default=RECOMMENDED_MAX_TOKENS,
-            ): int,
-            vol.Optional(
-                CONF_TOP_P,
-                description={"suggested_value": options.get(CONF_TOP_P)},
-                default=RECOMMENDED_TOP_P,
-            ): NumberSelector(NumberSelectorConfig(min=0, max=1, step=0.05)),
-            vol.Optional(
-                CONF_TEMPERATURE,
-                description={"suggested_value": options.get(CONF_TEMPERATURE)},
-                default=RECOMMENDED_TEMPERATURE,
-            ): NumberSelector(NumberSelectorConfig(min=0, max=1, step=0.05)),
-            vol.Optional(
-                CONF_AGENT_ID,
-                description={"suggested_value": options.get(CONF_AGENT_ID)},
-            ): SelectSelector(
-                SelectSelectorConfig(
-                    options=agents,
-                    custom_value=True,
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
-            ),
-            vol.Optional(
-                CONF_AGENT_ALIAS_ID,
-                description={
-                    "suggested_value": options.get(
-                        CONF_AGENT_ALIAS_ID, DEFAULT_AGENT_ALIAS_ID
+        )
+
+
+class AgentSubentryFlowHandler(BedrockSubentryFlowHandler):
+    """Flow for conversation agents backed by a Bedrock Agent."""
+
+    @override
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Configure the Bedrock Agent."""
+        entry = self._get_entry()
+        if entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="entry_not_loaded")
+
+        if user_input is not None:
+            return self._async_save(user_input)
+
+        agents = await async_list_agents(self.hass, entry.data)
+        schema: dict[Any, Any] = self._name_schema("Bedrock Agent")
+        schema.update(
+            {
+                probatio.Required(CONF_AGENT_ID): SelectSelector(
+                    SelectSelectorConfig(
+                        options=agents,
+                        custom_value=True,
+                        mode=SelectSelectorMode.DROPDOWN,
                     )
-                },
-            ): str,
-        }
-    )
-    return schema
+                ),
+                probatio.Required(
+                    CONF_AGENT_ALIAS_ID, default=DEFAULT_AGENT_ALIAS_ID
+                ): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                probatio.Schema(schema), self.options
+            ),
+        )

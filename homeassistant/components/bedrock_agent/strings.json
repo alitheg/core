@@ -1,21 +1,26 @@
 {
   "config": {
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_account%]"
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "list_models_failed": "Unable to list the available models. You can still enter a model ID.",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
     "step": {
-      "user": {
+      "model": {
         "data": {
-          "region": "Region",
-          "access_key_id": "Access key ID",
-          "secret_access_key": "Secret access key"
+          "model": "[%key:common::generic::model%]"
         },
         "data_description": {
-          "region": "The AWS region to use Amazon Bedrock in. Not all models are available in every region.",
-          "access_key_id": "The access key ID of an IAM user that is allowed to use Amazon Bedrock.",
-          "secret_access_key": "The secret access key belonging to the access key ID."
-        }
+          "model": "[%key:component::bedrock_agent::config_subentries::conversation::step::init::data_description::model%]"
+        },
+        "description": "Choose the model to use for the default conversation agent and AI task. You can change this later, or add more agents using other models.",
+        "title": "Choose a model"
       },
       "reauth_confirm": {
-        "title": "[%key:common::config_flow::title::reauth%]",
-        "description": "The credentials for Amazon Bedrock in {region} are no longer valid. Enter a new access key.",
         "data": {
           "access_key_id": "[%key:component::bedrock_agent::config::step::user::data::access_key_id%]",
           "secret_access_key": "[%key:component::bedrock_agent::config::step::user::data::secret_access_key%]"
@@ -23,77 +28,128 @@
         "data_description": {
           "access_key_id": "[%key:component::bedrock_agent::config::step::user::data_description::access_key_id%]",
           "secret_access_key": "[%key:component::bedrock_agent::config::step::user::data_description::secret_access_key%]"
-        }
-      }
-    },
-    "error": {
-      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
-      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
-      "unknown": "[%key:common::config_flow::error::unknown%]"
-    },
-    "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_account%]",
-      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
+        },
+        "description": "The credentials for Amazon Bedrock in {region} are no longer valid. Enter a new access key.",
+        "title": "[%key:common::config_flow::title::reauth%]"
+      },
+      "user": {
         "data": {
-          "prompt": "Instructions",
-          "chat_model": "[%key:common::generic::model%]",
-          "max_tokens": "Maximum tokens to return in response",
-          "temperature": "Temperature",
-          "top_p": "Top P",
-          "llm_hass_api": "[%key:common::config_flow::data::llm_hass_api%]",
-          "recommended": "Recommended model settings",
-          "agent_id": "Bedrock Agent",
-          "agent_alias_id": "Bedrock Agent alias ID"
+          "access_key_id": "Access key ID",
+          "region": "Region",
+          "secret_access_key": "Secret access key"
         },
         "data_description": {
-          "prompt": "Instruct how the LLM should respond. This can be a template.",
-          "llm_hass_api": "Allow the LLM to control Home Assistant using the selected API.",
-          "recommended": "Use the recommended model and settings. Disable to choose a model, tune the settings or use a Bedrock Agent.",
-          "chat_model": "The model ID or inference profile ID to use with the Converse API.",
-          "max_tokens": "The maximum number of tokens the model may generate in a response.",
-          "temperature": "Controls the randomness of the response. Lower values make the response more focused.",
-          "top_p": "Limits the response to the most likely tokens whose probabilities add up to this value.",
-          "agent_id": "Send conversations to a Bedrock Agent instead of a model. The agent uses its own instructions, tools and knowledge bases, so the model, instructions and Home Assistant control settings are ignored.",
-          "agent_alias_id": "The alias of the Bedrock Agent to use. TSTALIASID is the working draft of the agent."
+          "access_key_id": "The access key ID of an IAM user that is allowed to use Amazon Bedrock.",
+          "region": "The AWS region to use Amazon Bedrock in. Not all models are available in every region.",
+          "secret_access_key": "The secret access key belonging to the access key ID."
         }
       }
     }
   },
-  "services": {
-    "generate_content": {
-      "name": "Generate content",
-      "description": "Generate content from a prompt consisting of text and optionally images.",
-      "fields": {
-        "config_entry": {
-          "name": "Config entry",
-          "description": "The config entry to use for this action."
-        },
-        "prompt": {
-          "name": "Prompt",
-          "description": "The prompt.",
-          "example": "Describe what you see in these images"
-        },
-        "model": {
-          "name": "[%key:common::generic::model%]",
-          "description": "The model ID to use. Defaults to the model of the conversation agent.",
-          "example": "anthropic.claude-3-haiku-20240307-v1:0"
-        },
-        "image_filename": {
-          "name": "Image filename",
-          "description": "Images to include in the prompt.",
-          "example": "/config/www/image.jpg"
+  "config_subentries": {
+    "agent": {
+      "abort": {
+        "entry_not_loaded": "[%key:component::bedrock_agent::config_subentries::conversation::abort::entry_not_loaded%]"
+      },
+      "entry_type": "Bedrock Agent",
+      "initiate_flow": {
+        "reconfigure": "Reconfigure Bedrock Agent",
+        "user": "Add Bedrock Agent"
+      },
+      "step": {
+        "init": {
+          "data": {
+            "agent_alias_id": "Agent alias ID",
+            "agent_id": "Agent",
+            "name": "[%key:common::config_flow::data::name%]"
+          },
+          "data_description": {
+            "agent_alias_id": "The alias of the agent to use. TSTALIASID is the working draft of the agent.",
+            "agent_id": "The Bedrock Agent to send conversations to. The agent uses its own instructions, tools and knowledge bases.",
+            "name": "[%key:component::bedrock_agent::config_subentries::conversation::step::init::data_description::name%]"
+          }
+        }
+      }
+    },
+    "ai_task_data": {
+      "abort": {
+        "entry_not_loaded": "[%key:component::bedrock_agent::config_subentries::conversation::abort::entry_not_loaded%]"
+      },
+      "entry_type": "AI task",
+      "initiate_flow": {
+        "reconfigure": "Reconfigure AI task",
+        "user": "Add AI task"
+      },
+      "step": {
+        "init": {
+          "data": {
+            "max_tokens": "[%key:component::bedrock_agent::config_subentries::conversation::step::init::data::max_tokens%]",
+            "model": "[%key:common::generic::model%]",
+            "name": "[%key:common::config_flow::data::name%]"
+          },
+          "data_description": {
+            "max_tokens": "[%key:component::bedrock_agent::config_subentries::conversation::step::init::data_description::max_tokens%]",
+            "model": "[%key:component::bedrock_agent::config_subentries::conversation::step::init::data_description::model%]",
+            "name": "[%key:component::bedrock_agent::config_subentries::conversation::step::init::data_description::name%]"
+          }
+        }
+      }
+    },
+    "conversation": {
+      "abort": {
+        "entry_not_loaded": "The Amazon Bedrock integration is not loaded. Make sure it is loaded before adding or reconfiguring agents."
+      },
+      "entry_type": "Conversation agent",
+      "initiate_flow": {
+        "reconfigure": "Reconfigure conversation agent",
+        "user": "Add conversation agent"
+      },
+      "step": {
+        "init": {
+          "data": {
+            "llm_hass_api": "[%key:common::config_flow::data::llm_hass_api%]",
+            "max_tokens": "Maximum tokens to return in response",
+            "model": "[%key:common::generic::model%]",
+            "name": "[%key:common::config_flow::data::name%]",
+            "prompt": "[%key:common::config_flow::data::prompt%]",
+            "temperature": "Temperature"
+          },
+          "data_description": {
+            "llm_hass_api": "Select which tools the model can use to interact with your devices and entities.",
+            "max_tokens": "The maximum number of tokens the model may generate in a response.",
+            "model": "The model ID or inference profile ID to use. Models need to be enabled in the Amazon Bedrock console.",
+            "name": "The name of the agent.",
+            "prompt": "Instruct how the LLM should respond. This can be a template.",
+            "temperature": "Controls the randomness of the response. Lower values make the response more focused."
+          }
         }
       }
     }
   },
   "exceptions": {
-    "invalid_config_entry": {
-      "message": "Invalid config entry provided. Got {config_entry}"
+    "api_error": {
+      "message": "Error talking to Amazon Bedrock: {error}"
+    },
+    "attachment_not_found": {
+      "message": "`{path}` does not exist"
+    },
+    "cannot_connect": {
+      "message": "Unable to connect to Amazon Bedrock: {error}"
+    },
+    "invalid_auth": {
+      "message": "Invalid AWS credentials: {error}"
+    },
+    "invalid_tool_input": {
+      "message": "The model returned invalid input for a tool"
+    },
+    "json_parse_error": {
+      "message": "Failed to parse the structured response from the model"
+    },
+    "response_not_found": {
+      "message": "The model did not return a response"
+    },
+    "unsupported_attachment": {
+      "message": "`{path}` is not a supported image or document"
     }
   }
 }
