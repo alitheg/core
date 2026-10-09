@@ -21,7 +21,7 @@ from homeassistant.core import (
     SupportsResponse,
 )
 from homeassistant.exceptions import (
-    ConfigEntryError,
+    ConfigEntryAuthFailed,
     ConfigEntryNotReady,
     HomeAssistantError,
     ServiceValidationError,
@@ -55,8 +55,8 @@ IMAGE_FORMATS = {
     "image/webp": "webp",
 }
 
-AUTH_ERROR_CODES = {
-    "AccessDeniedException",
+# The access key or secret is wrong, expired or has been revoked
+INVALID_CREDENTIALS_CODES = {
     "InvalidSignatureException",
     "UnrecognizedClientException",
     "ExpiredTokenException",
@@ -87,9 +87,25 @@ def create_client(data: dict[str, Any] | Any, service_name: str) -> BaseClient:
     return session.client(service_name)
 
 
+def is_invalid_credentials(err: ClientError | BotoCoreError) -> bool:
+    """Return if an error is caused by invalid credentials."""
+    return (
+        isinstance(err, ClientError)
+        and err.response.get("Error", {}).get("Code") in INVALID_CREDENTIALS_CODES
+    )
+
+
 def is_auth_error(err: ClientError) -> bool:
-    """Return if a client error is caused by invalid credentials."""
-    return err.response.get("Error", {}).get("Code") in AUTH_ERROR_CODES
+    """Return if a client error is caused by invalid credentials or permissions.
+
+    At runtime an access denied error usually means access to the model has
+    not been enabled, so it should only be treated as an authentication error
+    when validating credentials.
+    """
+    return (
+        is_invalid_credentials(err)
+        or err.response.get("Error", {}).get("Code") == "AccessDeniedException"
+    )
 
 
 def error_message(err: ClientError | BotoCoreError) -> str:
@@ -158,6 +174,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 )
             )
         except (ClientError, BotoCoreError) as err:
+            if is_invalid_credentials(err):
+                entry.async_start_reauth(hass)
             raise HomeAssistantError(
                 f"Error generating content: {error_message(err)}"
             ) from err
@@ -209,7 +227,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: BedrockConfigEntry) -> b
         entry.runtime_data = await hass.async_add_executor_job(create_clients)
     except ClientError as err:
         if is_auth_error(err):
-            raise ConfigEntryError(
+            raise ConfigEntryAuthFailed(
                 f"Invalid AWS credentials: {error_message(err)}"
             ) from err
         raise ConfigEntryNotReady(error_message(err)) from err

@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from botocore.exceptions import ClientError
+import pytest
 import voluptuous as vol
 
 from homeassistant.components import conversation
@@ -144,6 +145,31 @@ async def test_error_handling(
 
     assert result.response.response_type == intent.IntentResponseType.ERROR, result
     assert result.response.error_code == "unknown", result
+
+
+@pytest.mark.parametrize(
+    ("code", "reauth"),
+    [("ExpiredTokenException", True), ("AccessDeniedException", False)],
+)
+async def test_auth_error_starts_reauth(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_clients: dict[str, MagicMock],
+    mock_init_component,
+    code: str,
+    reauth: bool,
+) -> None:
+    """Test reauth is only started when the credentials are invalid."""
+    mock_clients["bedrock-runtime"].converse.side_effect = _client_error(code)
+
+    result = await conversation.async_converse(
+        hass, "hello", None, Context(), agent_id=mock_config_entry.entry_id
+    )
+    await hass.async_block_till_done()
+
+    assert result.response.response_type == intent.IntentResponseType.ERROR
+    flows = hass.config_entries.flow.async_progress_by_handler("bedrock_agent")
+    assert bool(flows) is reauth
 
 
 async def test_template_error(

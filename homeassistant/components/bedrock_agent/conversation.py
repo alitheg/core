@@ -10,12 +10,12 @@ from voluptuous_openapi import convert
 from homeassistant.components import assist_pipeline, conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LLM_HASS_API, MATCH_ALL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import chat_session, device_registry as dr, intent, llm
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import BedrockConfigEntry, error_message
+from . import BedrockConfigEntry, error_message, is_invalid_credentials
 from .const import (
     CONF_AGENT_ALIAS_ID,
     CONF_AGENT_ID,
@@ -216,7 +216,7 @@ class BedrockConversationEntity(
         try:
             text = await self.hass.async_add_executor_job(invoke_agent)
         except (ClientError, BotoCoreError) as err:
-            LOGGER.error("Error talking to Bedrock Agent: %s", error_message(err))
+            self._async_handle_error(err)
             raise HomeAssistantError("Error talking to Amazon Bedrock") from err
 
         chat_log.async_add_assistant_content_without_tools(
@@ -278,7 +278,7 @@ class BedrockConversationEntity(
                     partial(client.converse, messages=messages, **model_args)
                 )
             except (ClientError, BotoCoreError) as err:
-                LOGGER.error("Error talking to Amazon Bedrock: %s", error_message(err))
+                self._async_handle_error(err)
                 raise HomeAssistantError("Error talking to Amazon Bedrock") from err
 
             LOGGER.debug("Response %s", response)
@@ -315,6 +315,13 @@ class BedrockConversationEntity(
         return conversation.ConversationResult(
             response=intent_response, conversation_id=chat_log.conversation_id
         )
+
+    @callback
+    def _async_handle_error(self, err: ClientError | BotoCoreError) -> None:
+        """Log an error and start reauth if the credentials are invalid."""
+        LOGGER.error("Error talking to Amazon Bedrock: %s", error_message(err))
+        if is_invalid_credentials(err):
+            self.entry.async_start_reauth(self.hass)
 
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry

@@ -52,6 +52,7 @@ async def test_setup_and_unload(
     ("side_effect", "state"),
     [
         (_client_error("UnrecognizedClientException"), ConfigEntryState.SETUP_ERROR),
+        (_client_error("AccessDeniedException"), ConfigEntryState.SETUP_ERROR),
         (_client_error("ThrottlingException"), ConfigEntryState.SETUP_RETRY),
         (
             EndpointConnectionError(endpoint_url="https://example.com"),
@@ -74,6 +75,10 @@ async def test_setup_errors(
     await hass.async_block_till_done()
 
     assert mock_config_entry.state is state
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [flow["context"]["source"] for flow in flows] == (
+        ["reauth"] if state is ConfigEntryState.SETUP_ERROR else []
+    )
 
 
 async def test_generate_content(
@@ -256,3 +261,32 @@ async def test_generate_content_invalid_config_entry(
             blocking=True,
             return_response=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("code", "reauth"),
+    [("UnrecognizedClientException", True), ("AccessDeniedException", False)],
+)
+async def test_generate_content_reauth(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_clients: dict[str, MagicMock],
+    mock_init_component,
+    code: str,
+    reauth: bool,
+) -> None:
+    """Test reauth is only started when the credentials are invalid."""
+    mock_clients["bedrock-runtime"].converse.side_effect = _client_error(code)
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            DOMAIN,
+            "generate_content",
+            {"config_entry": mock_config_entry.entry_id, "prompt": "Hi"},
+            blocking=True,
+            return_response=True,
+        )
+    await hass.async_block_till_done()
+
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert bool(flows) is reauth

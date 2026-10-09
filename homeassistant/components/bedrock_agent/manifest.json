@@ -9,6 +9,6 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "loggers": ["boto3", "botocore", "s3transfer"],
-  "quality_scale": "bronze",
+  "quality_scale": "silver",
   "requirements": ["boto3==1.34.131"]
 }

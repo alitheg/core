@@ -284,3 +284,41 @@ async def test_options_listing_fails(
     assert options["type"] is FlowResultType.CREATE_ENTRY
     assert CONF_AGENT_ID not in options["data"]
     assert CONF_AGENT_ALIAS_ID not in options["data"]
+
+
+async def test_reauth(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_clients: dict[str, MagicMock],
+) -> None:
+    """Test re-authenticating with new credentials."""
+    result = await mock_config_entry.start_reauth_flow(hass)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["description_placeholders"]["region"] == "us-east-1"
+
+    with patch(
+        "homeassistant.components.bedrock_agent.config_flow.validate_input",
+        side_effect=_client_error("UnrecognizedClientException"),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_ACCESS_KEY_ID: "AKIANEW", CONF_SECRET_ACCESS_KEY: "wrong"},
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_auth"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_ACCESS_KEY_ID: "AKIANEW", CONF_SECRET_ACCESS_KEY: "new-secret"},
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert mock_config_entry.data == {
+        CONF_REGION: "us-east-1",
+        CONF_ACCESS_KEY_ID: "AKIANEW",
+        CONF_SECRET_ACCESS_KEY: "new-secret",
+    }
+    assert mock_config_entry.state is config_entries.ConfigEntryState.LOADED
